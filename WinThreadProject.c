@@ -1,8 +1,8 @@
 #include <Windows.h>
 #include <stdio.h>
 
-#define NUM_PROD_THREADS 60
-#define NUM_CONS_THREADS 50
+#define NUM_PROD_THREADS 5
+#define NUM_CONS_THREADS 4
 #define BUF_SIZE 25
 
 /*
@@ -17,6 +17,10 @@
 
 		Buffer - Where the items are stored and consumed
 			from
+
+		LogBuff - Temporary buffer to hold log input.
+			This is changed inside each thread and must be
+			locked.
 
 		BufMutex - The mutex lock which only allows one
 			producer or consumer thread to enter the 
@@ -38,6 +42,7 @@ typedef struct {
 	int start;
 	int end;
 	char buffer[BUF_SIZE];
+	char *logBuff;
 	HANDLE bufMutex;
 	HANDLE slots;
 	HANDLE items;
@@ -45,7 +50,7 @@ typedef struct {
 
 // Global Variables
 memBuf theBuf;		// The buffer object
-HANDLE file;		// Log File to print to
+FILE *fp;			// Log File tho print to
 
 /*
 	Two different types of threads
@@ -57,7 +62,7 @@ HANDLE conThread;
 
 // Function Headers
 void initBuf(memBuf*);
-void initLog(HANDLE*);
+void initLog();
 DWORD WINAPI produce(LPVOID *lpParam);
 DWORD WINAPI consume(LPVOID *lpParam);
 
@@ -70,7 +75,7 @@ int main(int argc, char const *argv[])
 
 	// Initalize memBuf and log file
 	initBuf(&theBuf);
-	initLog(&file);
+	initLog(fp);
 
 	// Create producer and consumer threads
 	for (i = 0; i < NUM_CONS_THREADS || i < NUM_PROD_THREADS; ++i)	{
@@ -122,8 +127,8 @@ int main(int argc, char const *argv[])
 		CloseHandle(proThread[k]);
 	}
 
-	// Close File Handle
-	CloseHandle(file);
+	// Close Log File
+	fclose(fp);
 
 	printf("Done\n");
 
@@ -174,77 +179,108 @@ void initBuf(memBuf *buf) {
 
 }
 
-void initLog(HANDLE *fp) {
+void initLog() {
 	/*
 		This function opens the file and checks for any errors. If
-		an error is found it returns.
+		there is an error, it prints to console
 	*/
 
-	// Open Log File for writing too
-	*fp = CreateFile(
-			"log.txt", 				// File Name
-			GENERIC_WRITE,			// Write Permissions only
-			0,						// No sharing 
-			NULL,					// Default security
-			CREATE_ALWAYS,			// Always make new file, Overwrite any existing
-			FILE_ATTRIBUTE_NORMAL,	// Normal File
-			NULL					// No File attr
-		);
- 
- 	// Check for creating file error
-	if (file = INVALID_HANDLE_VALUE) 	{
-        printf(TEXT("Terminal failure: Unable to open /log.txt for write.\n"));
-        return;
+	if ((fp = fopen(".\\log.txt", "w")) == NULL) {
+		printf("Cannot open file.\n");
 	}
 }
 
 DWORD WINAPI consume(LPVOID *lpParam) {
-	int removeItem = 0;
+	/*
+		This is the function that in run by all the consumer threads. The function
+		gets a lock from the items semaphore and then waits until it gets access to
+		the buffer (mutex lock). One it gets access to the buffer, it replaces the
+		value (1) with 0. The 0 represents an open slot. While it still has control
+		of the buffer, it increments the start by one. This is the position what the 
+		next slot with a item in it.
 
-	memBuf *buf = (memBuf*)lpParam;
+		Once it finished with a the buffer it releases the mutex lock and also opens
+		a lock in the slots semaphore. This allows the producer threads to write to
+		the slot that the consumer just consumed.
+	*/
 
-		Sleep(100);
+	int removeItem = 0;					// Default value left over after consuming item
+	memBuf *buf = (memBuf*)lpParam;		// Casts the arg inputed to function and creates a new memBuf
+										// 	struct.
 
-		WaitForSingleObject(buf -> items, INFINITE);
-		WaitForSingleObject(buf -> bufMutex, INFINITE);
+		//Sleep(100);					// Puts the thread to sleep for specified amount of time
 
-		if (buf -> buffer[(buf -> start) % BUF_SIZE] == 0)	{
-			printf("This is bad: removeItem\n");
-		}
+		WaitForSingleObject(buf -> items, INFINITE);			// Gets lock for slot with an item in it
+		WaitForSingleObject(buf -> bufMutex, INFINITE);			// Gets buffer mutex lock
 
-		buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem;
-		buf -> start += 1;
+		/*
+			This prints an error message if the consumer thread consumes an
+			empty slot. Consumers are not allow to consume items that are
+			not filled.	
+		*/
+		if (buf -> buffer[(buf -> start) % BUF_SIZE] == 0)			
+			fprintf(fp, "%s\n", "This is bad: removeItem\n");
+
+		/*
+			Prints message to log file. Shows a sucessful consumption and
+			the slot which it consumed from.
+		*/
+		else 
+			fprintf(fp, "%s %d\n", "Consumed from:", (buf -> start) % BUF_SIZE);
+
+		buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem;	// Consumes the slot
+		buf -> start += 1;										// Increments where the next item to consume
 		
-		ReleaseMutex(buf -> bufMutex);
-		ReleaseSemaphore(buf -> slots, 1, NULL);
-		
-		printf("Consumed from: %d\n", (buf -> start - 1) % BUF_SIZE);
+		ReleaseMutex(buf -> bufMutex);					// Releases buffer mutex lock
+		ReleaseSemaphore(buf -> slots, 1, NULL);		// Releases a slot lock for producers
 
-	return 0;
+	return 0;	// Returns nothing. Function requires return value.
 }
 
 DWORD WINAPI produce(LPVOID *lpParam) {
-	int produceItem = 1;
-	//printf("I printed in a thread %d\n", produceItem);
+	/*
+		This is the function that the producer thread runs. This function gets
+		a lock from the slots semaphore and waits for the buffer mutex lock to
+		be avaiable. Once it has access to the buffer, it produces an item (1)
+		an places it into the empty slot. The function checks to make sure that
+		it is not producing in a slot that is already filled. The function then 
+		produces the item into the slot and increments where the next open slot 
+		is.
 
-	memBuf *buf = (memBuf*)lpParam;
+		After the producer thread is finished with the buffer, it releases the 
+		buffer mutex lock and releases a lock for the item semaphore. This allows
+		the consumer threads to gain access to that slot and consume the item
+		inside the slot.
+	*/
 
-		//sem_wait(&buf -> slots);
-		WaitForSingleObject(buf -> slots, INFINITE);
-		WaitForSingleObject(buf -> bufMutex, INFINITE);
+	int produceItem = 1;				// The item that the prodecer thread creates
+	memBuf *buf = (memBuf*)lpParam;		// Cast the function input arg to a memBuf struct
+										//		--- This is the global memBuf struct ---
 
-		if (buf -> buffer[(buf -> end) % BUF_SIZE] == 1)
-		{
-			printf("This is bad: produceItem\n");
-		}
+		WaitForSingleObject(buf -> slots, INFINITE);		// Gets lock from slots semaphore
+		WaitForSingleObject(buf -> bufMutex, INFINITE);		// Get buffer mutex lock
+
+		/*
+			This prints an error message if the producerthread produces in an
+			filled slot. Procuders are not allow to produce an item inside a slot
+			that is already filled.
+		*/
+		if (buf -> buffer[(buf -> end) % BUF_SIZE] == 1) 		
+			fprintf(fp, "This is bad: produceItem\n");
+
+		/*
+			If slot is empty, prints message to the log file that
+			says it produced an item and the slot that it produced
+			in.
+		*/
+		else
+			fprintf(fp, "Produced in: %d\n", (buf -> end) % BUF_SIZE);
 		
-		buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;
-		buf -> end += 1;
+		buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;	// Produces the item in the correct slot
+		buf -> end += 1;										// Increments where the next empty slot is.
 
-		ReleaseMutex(buf -> bufMutex);
-		ReleaseSemaphore(buf -> items, 1, NULL);
-		//sem_post(&buf -> items);
-		printf("Produced in: %d\n", (buf -> end - 1) % BUF_SIZE);	
+		ReleaseMutex(buf -> bufMutex);				// Releases the buffer mutex lock
+		ReleaseSemaphore(buf -> items, 1, NULL);	// Releases a lock in the items semaphore for consumer threads.		
 	
-	return 0;
+	return 0;		// Returns nothing. Function requires return value.
 }
