@@ -5,12 +5,35 @@
 #define NUM_CONS_THREADS 50
 #define BUF_SIZE 25
 
-HANDLE bufMutex;
-HANDLE slots;
-HANDLE items;
-HANDLE proThread;
-HANDLE conThread;
+/*
+	Struct to hold all variables need for the
+	buffer to work to spec.
 
+		Start - Holds index of the first item in
+			the queue(buffer) to be consumed
+
+		End - Holds index of the next spot for an item 
+			to be produced at the end of the queue
+
+		Buffer - Where the items are stored and consumed
+			from
+
+		BufMutex - The mutex lock which only allows one
+			producer or consumer thread to enter the 
+			buffer. 
+
+		Slots - The semaphore that locks the empty slots.
+			If there are no slot locks left, producer
+			threads will not be able to access the buffer.
+			This means that the buffer is full and there 
+			aren't any open slots to produce in.
+
+		Items - The semaphore lock that lock the filled
+			slots. If there are no Items in the buffer,
+			conusmer threads will not be able to access 
+			the buffer. This means there are no items to 
+			consume.
+*/
 typedef struct {
 	int start;
 	int end;
@@ -21,26 +44,37 @@ typedef struct {
 } memBuf;
 
 // Global Variables
-memBuf theBuf;
+memBuf theBuf;		// The buffer object
+HANDLE file;		// Log File to print to
 
+/*
+	Two different types of threads
+		1. proThread for producers
+		2. conThread for consumers
+*/
+HANDLE proThread;
+HANDLE conThread;
+
+// Function Headers
 void initBuf(memBuf*);
+void initLog(HANDLE*);
 DWORD WINAPI produce(LPVOID *lpParam);
 DWORD WINAPI consume(LPVOID *lpParam);
 
 int main(int argc, char const *argv[])
 {	
 	
-	HANDLE proThread[NUM_PROD_THREADS];
-	HANDLE conThread[NUM_CONS_THREADS];
-	int i,j;
+	HANDLE proThread[NUM_PROD_THREADS]; 	// Array of producer threads 
+	HANDLE conThread[NUM_CONS_THREADS];		// Array of consumer threads
+	int i,j,k,l;							// Loop Counters
 
-	// Initalize memBuf
+	// Initalize memBuf and log file
 	initBuf(&theBuf);
+	initLog(&file);
 
-	//printf("%d\n", theBuf.start);
-
-	// Create producer threads
+	// Create producer and consumer threads
 	for (i = 0; i < NUM_CONS_THREADS || i < NUM_PROD_THREADS; ++i)	{
+		
 		if (i < NUM_PROD_THREADS)	{
 			proThread[i] = CreateThread(
 					NULL,                   // default security attributes
@@ -50,11 +84,9 @@ int main(int argc, char const *argv[])
 			        0,                      // use default creation flags 
 			        NULL  					// returns the thread identifier 
 				);
-
-			//pthread_create(&proThread[i], NULL, produce, (void*)&theBuf);
 		}
-		if (i < NUM_CONS_THREADS)	{
 
+		if (i < NUM_CONS_THREADS)	{
 			conThread[i] = CreateThread(
 					NULL,                   // default security attributes
 			        0,                      // use default stack size  
@@ -63,16 +95,35 @@ int main(int argc, char const *argv[])
 			        0,                      // use default creation flags 
 			        NULL  					// returns the thread identifier 
 				);
-			//pthread_create(&conThread[i], NULL, consume, (void*)&theBuf);
 		}
 	}
 
+	// Wait for all the threads to finish executing 
 	WaitForMultipleObjects(NUM_PROD_THREADS, proThread, TRUE, INFINITE);
 	WaitForMultipleObjects(NUM_CONS_THREADS, conThread, TRUE, INFINITE);
 
-	CloseHandle(buf.bufMutex);
-	CloseHandle(buf.slots);
-	CloseHandle(buf.items);
+	// Close thread handles
+	CloseHandle(theBuf.bufMutex);
+	CloseHandle(theBuf.slots);
+	CloseHandle(theBuf.items);
+
+	/* 
+		Need for loops to close all threads in the producer and 
+		consumer thread arrays to avoid memeory leaks
+	*/
+
+	// Closing all onsumer thread handles
+	for (k = 0; k < NUM_CONS_THREADS; ++k)	{
+		CloseHandle(conThread[k]);
+	}
+
+	// Closing all producer thread handles
+	for (l = 0; l < NUM_PROD_THREADS; ++l)	{
+		CloseHandle(proThread[k]);
+	}
+
+	// Close File Handle
+	CloseHandle(file);
 
 	printf("Done\n");
 
@@ -80,58 +131,93 @@ int main(int argc, char const *argv[])
 }
 
 void initBuf(memBuf *buf) {
+	/*
+		initBuf - This function is designed to initalize the global
+			buffer struct. (memBuf) It creates the two semaphore 
+			and mutex locks inside the struct. The description of 
+			these locks is located above the struct typedef.
+
+			This function also fills in the default start and
+			end points of the buffer
+	*/
 	
 	buf -> bufMutex = CreateMutex(
 		NULL,              // default security attributes
-		FALSE,             // initially not owned
+		FALSE,             // initial
 		NULL);
 	
+	/*
+		The slots semaphore's inital value is size of the buffer
+		array - 1. This is because all the slots are open so
+		all the locks for the slots are available. Producers
+		are able to get locks for all of the available slots. 
+	*/
 	buf -> slots = CreateSemaphore(
 		NULL,           // default security attributes
 		BUF_SIZE - 1,   // initial count
 		BUF_SIZE - 1,   // maximum count
 		NULL);          // unnamed semaphore
 
+	/*
+		The item's semaphore's inital value starts out at 0. This 
+		is because all the slots are empty so the there are no
+		locks available for consumers to consume.
+	*/
 	buf -> items = CreateSemaphore(
 		NULL,           // default security attributes
 		0,  			// initial count
-		BUF_SIZE - 1,  		// maximum count
+		BUF_SIZE - 1,  	// maximum count
 		NULL);          // unnamed semaphore
 
 	buf -> start = 0;
 	buf -> end = 0;
 
-	/* Linux sem initalizers
-	sem_init(&buf->bufMutex, 0, 1);
-	sem_init(&buf->slots, 0, BUF_SIZE);
-	sem_init(&buf->items, 0, 0);
-	*/
 }
 
+void initLog(HANDLE *fp) {
+	/*
+		This function opens the file and checks for any errors. If
+		an error is found it returns.
+	*/
 
+	// Open Log File for writing too
+	*fp = CreateFile(
+			"log.txt", 				// File Name
+			GENERIC_WRITE,			// Write Permissions only
+			0,						// No sharing 
+			NULL,					// Default security
+			CREATE_ALWAYS,			// Always make new file, Overwrite any existing
+			FILE_ATTRIBUTE_NORMAL,	// Normal File
+			NULL					// No File attr
+		);
+ 
+ 	// Check for creating file error
+	if (file = INVALID_HANDLE_VALUE) 	{
+        printf(TEXT("Terminal failure: Unable to open /log.txt for write.\n"));
+        return;
+	}
+}
 
 DWORD WINAPI consume(LPVOID *lpParam) {
 	int removeItem = 0;
-	//printf("I printed in another thread %d\n", removeItem);
 
 	memBuf *buf = (memBuf*)lpParam;
 
 		Sleep(100);
 
-		//sem_wait(&buf -> items);
 		WaitForSingleObject(buf -> items, INFINITE);
 		WaitForSingleObject(buf -> bufMutex, INFINITE);
 
-		if (buf -> buffer[(buf -> start) % BUF_SIZE] == 0)
-		{
+		if (buf -> buffer[(buf -> start) % BUF_SIZE] == 0)	{
 			printf("This is bad: removeItem\n");
 		}
+
 		buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem;
 		buf -> start += 1;
 		
 		ReleaseMutex(buf -> bufMutex);
 		ReleaseSemaphore(buf -> slots, 1, NULL);
-		//sem_post(&buf -> slots);
+		
 		printf("Consumed from: %d\n", (buf -> start - 1) % BUF_SIZE);
 
 	return 0;
@@ -162,45 +248,3 @@ DWORD WINAPI produce(LPVOID *lpParam) {
 	
 	return 0;
 }
-
-/* 	Linux Version of creating and waiting for threads
-	// Create producer threads
-	for (i = 0; i < NUM_CONS_THREADS || i < NUM_PROD_THREADS; ++i)	{
-		if (i < NUM_PROD_THREADS)	{
-			pthread_create(&proThread[i], NULL, produce, (void*)&theBuf);
-		}
-		if (i < NUM_CONS_THREADS)	{
-			pthread_create(&conThread[i], NULL, consume, (void*)&theBuf);
-		}
-	}
-
-	// Join Threads
-	for (j = 0; j < NUM_CONS_THREADS || j < NUM_PROD_THREADS; ++j)	{
-		if (j < NUM_PROD_THREADS)	{
-			pthread_join(proThread[j], NULL);
-		}
-		if (j < NUM_CONS_THREADS)	{
-			pthread_join(conThread[j], NULL);
-		}
-	}
-
-	*/
-
-	/*	Linux Version
-
-	void consume(memBuf *buf) {
-		int removeItem = 0;
-		
-		sem_wait(&buf -> items);
-		sem_wait(&buf -> bufMutex);
-
-		buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem;
-		buf -> start += 1;
-		
-		sem_post(&buf -> bufMutex);
-		sem_post(&buf -> slots);
-
-		printf("consume thread %ld consumed item number %d\n", pthread_self(), (buf -> start - 1) % BUF_SIZE);
-	}
-
-	*/
