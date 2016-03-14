@@ -204,11 +204,14 @@ DWORD WINAPI consume(LPVOID *lpParam) {
 		the slot that the consumer just consumed.
 	*/
 
+	int m;
 	int removeItem = 0;					// Default value left over after consuming item
 	memBuf *buf = (memBuf*)lpParam;		// Casts the arg inputed to function and creates a new memBuf
 										// 	struct.
 
 		//Sleep(100);					// Puts the thread to sleep for specified amount of time
+
+		for(m = 0; m < 20; m++) {
 
 		WaitForSingleObject(buf -> items, INFINITE);			// Gets lock for slot with an item in it
 		WaitForSingleObject(buf -> bufMutex, INFINITE);			// Gets buffer mutex lock
@@ -234,6 +237,8 @@ DWORD WINAPI consume(LPVOID *lpParam) {
 		ReleaseMutex(buf -> bufMutex);					// Releases buffer mutex lock
 		ReleaseSemaphore(buf -> slots, 1, NULL);		// Releases a slot lock for producers
 
+		}
+
 	return 0;	// Returns nothing. Function requires return value.
 }
 
@@ -253,9 +258,12 @@ DWORD WINAPI produce(LPVOID *lpParam) {
 		inside the slot.
 	*/
 
+	int n;
 	int produceItem = 1;				// The item that the prodecer thread creates
 	memBuf *buf = (memBuf*)lpParam;		// Cast the function input arg to a memBuf struct
 										//		--- This is the global memBuf struct ---
+
+		for(n = 0; n < 20; n++) {
 
 		WaitForSingleObject(buf -> slots, INFINITE);		// Gets lock from slots semaphore
 		WaitForSingleObject(buf -> bufMutex, INFINITE);		// Get buffer mutex lock
@@ -282,5 +290,7 @@ DWORD WINAPI produce(LPVOID *lpParam) {
 		ReleaseMutex(buf -> bufMutex);				// Releases the buffer mutex lock
 		ReleaseSemaphore(buf -> items, 1, NULL);	// Releases a lock in the items semaphore for consumer threads.		
 	
+		}
+
 	return 0;		// Returns nothing. Function requires return value.
 }
