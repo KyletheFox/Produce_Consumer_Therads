@@ -75,7 +75,7 @@ int main(int argc, char const *argv[])
 
 	// Initalize memBuf and log file
 	initBuf(&theBuf);
-	initLog(fp);
+	initLog();
 
 	// Create producer and consumer threads
 	for (i = 0; i < NUM_CONS_THREADS || i < NUM_PROD_THREADS; ++i)	{
