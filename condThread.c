@@ -7,6 +7,34 @@
 #define NUM_CONS_THREADS 362
 #define BUF_SIZE 25
 
+/*
+	Struct to hold all variables need for the
+	buffer to work to spec.
+
+		Start - Holds index of the first item in
+			the queue(buffer) to be consumed
+
+		End - Holds index of the next spot for an item 
+			to be produced at the end of the queue
+
+		Buffer - Where the items are stored and consumed
+			from
+
+		BufMutex - The mutex lock which only allows one
+			producer or consumer thread to enter the 
+			buffer. 
+
+		Empty - The condition variable for telling the
+			monitor that the buffer is empty so don't
+			allow any consumers inside the buffer. 
+			Producers can still fill up the buffer.
+
+		Full - The condition variable responsilbe for
+			alerting the monitor that the buffer is full.
+			the montior should not allow any more 
+			producers into the thread.
+*/
+
 typedef struct {
 	int start;
 	int end;
@@ -17,20 +45,24 @@ typedef struct {
 } memBuf;
 
 // Global Variables
-memBuf theBuf;
+memBuf theBuf;		// The buffer struct
+FILE *fp;			// Log File
 
+// Functiion Headers
 void initBuf(memBuf*);
+void initLog();
 void produce(memBuf*);
 void consume(memBuf*);
 
 int main(int argc, char const *argv[])
 {
-	pthread_t proThread[NUM_PROD_THREADS];
-	pthread_t conThread[NUM_CONS_THREADS];
-	int i,j;
+	pthread_t proThread[NUM_PROD_THREADS];		// Array of producer threads
+	pthread_t conThread[NUM_CONS_THREADS];		// Array of consumer threads
+	int i,j;									// Loop counters
 
-	// Initalize memBuf
+	// Initalize memBuf and log file
 	initBuf(&theBuf);
+	initLog();
 
 	// Create producer threads
 	for (i = 0; i < NUM_CONS_THREADS || i < NUM_PROD_THREADS; ++i)	{
@@ -52,6 +84,10 @@ int main(int argc, char const *argv[])
 		}
 	}
 
+	// Close file
+	fclose(fp);
+
+	// Alert user operation has finished
 	printf("Done\n");
 
 	return 0;
@@ -65,6 +101,18 @@ void initBuf(memBuf *buf) {
 	pthread_cond_init(&buf->empty, NULL);
 }
 
+void initLog() {
+
+	/*
+		This function opens the file and checks for any errors. If
+		there is an error opening file, it prints to console
+	*/
+
+	if ((fp = fopen("log.txt", "w")) == NULL) {
+		printf("Cannot open file.\n");
+	}
+}
+
 void consume(memBuf *buf) {
 	int removeItem = 0;
 	
@@ -76,7 +124,7 @@ void consume(memBuf *buf) {
 	buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem;
 	buf -> start += 1;
 	
-	printf("consume thread %ld consumed item number %d\n", pthread_self(), (buf -> start - 1) % BUF_SIZE);
+	fprintf(fp, "Consumed in slot: %d\n", (buf -> start - 1) % BUF_SIZE);
 	
 	pthread_cond_signal(&buf->full);
 	pthread_mutex_unlock(&buf->bufMutex);
@@ -95,7 +143,7 @@ void produce(memBuf *buf) {
 	buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;
 	buf -> end += 1;
 
-	printf("producer thread %ld produceItem item number %d\n", pthread_self(), (buf -> end - 1) % BUF_SIZE);
+	fprintf(fp, "Produced in slot: %d\n", (buf -> end - 1) % BUF_SIZE);
 
 	pthread_cond_signal(&buf->empty);
 	pthread_mutex_unlock(&buf->bufMutex);
