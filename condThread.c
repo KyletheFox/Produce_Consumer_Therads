@@ -192,26 +192,49 @@ void consume(memBuf *buf) {
 
 void produce(memBuf *buf) {
 	/*
-		This function is the function that will ran by the producer threads.
+		This function is the function that will run by the producer threads. The 
+		producer thread places a 1 in an empty index. This 1 represents a slot
+		that has been filled b a producer.
+
+		Each producer thread will produce 20 different items inside the buffer 
+		by using a for loop.
+
+		The producer thread works by first attempting to get the mutex lock for
+		the buffer. Once it has the lock it enters into a while loop which 
+		spins until the buffer is not full. If the buffer is full, it waits
+		for a change in the full conditon to change and once it does it 
+		wakes back up with the buffer lock. 
+
+		The producer then places the item into the index represented by the 
+		end value inside the memBuf struct and increments the end value. A
+		message is then printed out to the log file. Thh thread then signals
+		any threads wait for a change on the empty condition and releases the
+		mutex lock.
+
 	*/
 	
 	int produceItem = 1;		// Value to be placed in buffer to represent a filled slot
 	int l;						// Loop Counter
 	
-	for (l = 0; l < 20; ++l)	{
+	for (l = 0; l < 20; ++l)	{			// Loop to produce 20 items
 
-		pthread_mutex_trylock(&buf->bufMutex);
+		pthread_mutex_trylock(&buf->bufMutex);					// Attempts to get the mutex locks
 		while((&buf->end - &buf->start) == BUF_SIZE - 1) {
+			/*
+				This loops continues to check if the buffer is full. Inside
+				the loop, the thread waits for the full condition to change
+				and when it does it wakes up with the mutex lock.
+			*/		
 			pthread_cond_wait(&buf->full, &buf->bufMutex);
 		}
 
-		buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;
-		buf -> end += 1;
+		buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;		// Place item in buffer
+		buf -> end += 1;											// Increment end index
 
-		fprintf(fp, "Produced in slot: %d\n", (buf -> end - 1) % BUF_SIZE);
+		fprintf(fp, "Produced in slot: %d\n", (buf -> end - 1) % BUF_SIZE);		// Print msg to log file
 
-		pthread_cond_signal(&buf->empty);
-		pthread_mutex_unlock(&buf->bufMutex);
+		pthread_cond_signal(&buf->empty);			// Signal empty conditon
+		pthread_mutex_unlock(&buf->bufMutex);		// Release buffer mutex lock
 
 	}
 
