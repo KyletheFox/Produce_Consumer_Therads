@@ -3,19 +3,13 @@
 #include <pthread.h>
 #include <sys/types.h>
 
-#define NUM_PROD_THREADS 385
-#define NUM_CONS_THREADS 362
+#define NUM_PROD_THREADS 5
+#define NUM_CONS_THREADS 4
 #define BUF_SIZE 25
 
 /*
 	Struct to hold all variables need for the
 	buffer to work to spec.
-
-		Start - Holds index of the first item in
-			the queue(buffer) to be consumed
-
-		End - Holds index of the next spot for an item 
-			to be produced at the end of the queue
 
 		Buffer - Where the items are stored and consumed
 			from
@@ -24,29 +18,29 @@
 			producer or consumer thread to enter the 
 			buffer. 
 
-		Empty - The condition variable for telling the
-			monitor that the buffer is empty so don't
+		Empty_slot - The condition variable for telling the
+			monitor that the buffer is empty_slot so don't
 			allow any consumers inside the buffer. 
 			Producers can still fill up the buffer.
 
-		Full - The condition variable responsilbe for
-			alerting the monitor that the buffer is full.
+		Full_slot - The condition variable responsilbe for
+			alerting the monitor that the buffer is full_slot.
 			the montior should not allow any more 
 			producers into the thread.
 */
 
 typedef struct {
-	int start;
-	int end;
 	char buffer[BUF_SIZE];
 	pthread_mutex_t bufMutex;
-	pthread_cond_t empty;
-	pthread_cond_t full;
+	pthread_cond_t empty_slot;
+	pthread_cond_t full_slot;
 } memBuf;
 
 // Global Variables
 memBuf theBuf;		// The buffer struct
 FILE *fp;			// Log File
+int start = 0;		// Next Index to Consume
+int end = 0;		// Next Index to Produce
 
 // Functiion Headers
 void initBuf(memBuf*);
@@ -58,7 +52,7 @@ int main(int argc, char const *argv[])
 {
 	pthread_t proThread[NUM_PROD_THREADS];		// Array of producer threads
 	pthread_t conThread[NUM_CONS_THREADS];		// Array of consumer threads
-	int i,j;								// Loop counters
+	int i,j;									// Loop counters
 
 	// Initalize memBuf and log file
 	initBuf(&theBuf);
@@ -95,6 +89,11 @@ int main(int argc, char const *argv[])
 	// Close file
 	fclose(fp);
 
+	// Making sure all threads are destroyed
+	pthread_cond_destroy(&theBuf.empty_slot);
+	pthread_cond_destroy(&theBuf .full_slot);
+    pthread_mutex_destroy(&theBuf.bufMutex);
+
 	// Alert user operation has finished
 	printf("Done\n");
 
@@ -107,16 +106,11 @@ void initBuf(memBuf *buf) {
 			buffer struct. (memBuf) It creates the two conditions 
 			and a mutex lock inside the struct. The description of 
 			these locks is located above the struct typedef.
-
-			This function also fills in the default start and
-			end points of the buffer
 	*/
 
-	buf -> start = 0;
-	buf -> end = 0;
-	pthread_mutex_init(&buf->bufMutex, NULL);
-	pthread_cond_init(&buf->full, NULL);
-	pthread_cond_init(&buf->empty, NULL);
+	pthread_mutex_init(&(buf->bufMutex), NULL);
+	pthread_cond_init(&(buf->full_slot), NULL);
+	pthread_cond_init(&(buf->empty_slot), NULL);
 }
 
 void initLog() {
@@ -144,16 +138,16 @@ void consume(memBuf *buf) {
 		The way the function works is by using a montior. The thread
 		first attempts to get the mutex lock. Once the thread aquires
 		the lock, it uses a while loop to continously check if the 
-		buffer is not empty. If it is empty it calls the conditional
+		buffer is not empty_slot. If it is empty_slot it calls the conditional
 		variable function wait. This function contiuniously checks to 
-		see if the buffer is empty.
+		see if the buffer is not empty_slot anymore.
 
 		Once the buffer become not ready, the thread is placed into the
 		wait queue holding the mutex lock. The consumer thread then 
 		consumes the start index of the buffer and prints a message to
 		the log file.
 
-		To finish, the thread signals the buffer full condition variable
+		To finish, the thread signals the buffer empty_slot condition variable
 		to allow a producer to access the buffer and unlocks buffer for
 		another thread to access the buffer.
 	*/
@@ -163,27 +157,31 @@ void consume(memBuf *buf) {
 
 	for (k = 0; k < 20; ++k)	{	// Loop to consume 20 elelemnts
 	
-		pthread_mutex_trylock(&buf -> bufMutex);	// Tries to get access to buffer
+		pthread_mutex_lock(&buf -> bufMutex);	// Tries to get access to buffer
 
-		while((&buf->end - &buf->start) == 0) {	
+		while((end - start) == 0) {	
 			/*
-				Loop to check for when buffer is not empty. If the buffer
-				is empty, it signals the monitor to wait for the condition
-				variable of empty to any producer threads and gives them
+				Loop to check for when buffer is not empty_slot. If the buffer
+				is empty_slot, it signals the monitor to waits for the condition
+				variable of full_slot to change and gives up
 				the mutex to access the buffer.
 
-				If the buffer is not empty, it exits the loop with the lock
+				If the buffer is not empty_slot, it exits the loop with the lock
 				in hand
 			*/
-			pthread_cond_wait(&buf->empty, &buf->bufMutex);
+			pthread_cond_wait(&buf->full_slot, &buf->bufMutex);
 		}
 
-		buf -> buffer[(buf -> start) % BUF_SIZE] = removeItem; 	// Place zero into buffer
-		buf -> start += 1;										// Increments the start index
+		if (buf -> buffer[(start) % BUF_SIZE] == 0) 	{
+			fprintf(fp, "ERROR: ");	
+		}
+
+		buf -> buffer[(start) % BUF_SIZE] = removeItem; 	// Place zero into buffer
+		start += 1;										// Increments the start index
 		
-		fprintf(fp, "Consumed in slot: %d\n", (buf -> start - 1) % BUF_SIZE);	// Output to lof file
+		fprintf(fp, "Consumed in slot: %d\n", (start - 1) % BUF_SIZE);	// Output to log file
 		
-		pthread_cond_signal(&buf->full);		// Signal any producer threads.
+		pthread_cond_signal(&buf->empty_slot);		// Signal any producer threads.
 		pthread_mutex_unlock(&buf->bufMutex);	// Unlocks buffer for another thread
 
 	}
@@ -193,7 +191,7 @@ void consume(memBuf *buf) {
 void produce(memBuf *buf) {
 	/*
 		This function is the function that will run by the producer threads. The 
-		producer thread places a 1 in an empty index. This 1 represents a slot
+		producer thread places a 1 in an empty_slot index. This 1 represents a slot
 		that has been filled b a producer.
 
 		Each producer thread will produce 20 different items inside the buffer 
@@ -201,14 +199,14 @@ void produce(memBuf *buf) {
 
 		The producer thread works by first attempting to get the mutex lock for
 		the buffer. Once it has the lock it enters into a while loop which 
-		spins until the buffer is not full. If the buffer is full, it waits
-		for a change in the full conditon to change and once it does it 
+		spins until the buffer is not full_slot. If the buffer is full_slot, it waits
+		for a change in the empty_slot conditon to change and once it does it 
 		wakes back up with the buffer lock. 
 
 		The producer then places the item into the index represented by the 
-		end value inside the memBuf struct and increments the end value. A
+		end value and increments the end value. A
 		message is then printed out to the log file. Thh thread then signals
-		any threads wait for a change on the empty condition and releases the
+		any threads wait for a change on the full_slot condition and releases the
 		mutex lock.
 
 	*/
@@ -218,22 +216,26 @@ void produce(memBuf *buf) {
 	
 	for (l = 0; l < 20; ++l)	{			// Loop to produce 20 items
 
-		pthread_mutex_trylock(&buf->bufMutex);					// Attempts to get the mutex locks
-		while((&buf->end - &buf->start) == BUF_SIZE - 1) {
+		pthread_mutex_lock(&buf->bufMutex);					// Attempts to get the mutex locks
+		while((end - start) == BUF_SIZE - 1) {
 			/*
-				This loops continues to check if the buffer is full. Inside
-				the loop, the thread waits for the full condition to change
+				This loops continues to check if the buffer is full_slot. Inside
+				the loop, the thread waits for the empty_slot condition to change
 				and when it does it wakes up with the mutex lock.
 			*/		
-			pthread_cond_wait(&buf->full, &buf->bufMutex);
+			pthread_cond_wait(&buf->empty_slot, &buf->bufMutex);
 		}
 
-		buf -> buffer[(buf -> end) % BUF_SIZE] = produceItem;		// Place item in buffer
-		buf -> end += 1;											// Increment end index
+		if (buf -> buffer[(end) % BUF_SIZE] == 1) 	{
+			fprintf(fp, "ERROR");	
+		}
 
-		fprintf(fp, "Produced in slot: %d\n", (buf -> end - 1) % BUF_SIZE);		// Print msg to log file
+		buf -> buffer[(end) % BUF_SIZE] = produceItem;		// Place item in buffer
+		end += 1;											// Increment end index
 
-		pthread_cond_signal(&buf->empty);			// Signal empty conditon
+		fprintf(fp, "Produced in slot: %d\n", (end - 1) % BUF_SIZE);		// Print msg to log file
+
+		pthread_cond_signal(&buf->full_slot);			// Signal empty_slot conditon
 		pthread_mutex_unlock(&buf->bufMutex);		// Release buffer mutex lock
 
 	}
